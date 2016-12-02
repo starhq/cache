@@ -35,18 +35,18 @@ public class RedisCacheTest {
     }
 
     @Test
-    public void testEhcache() throws Exception {
-        Nano.bench().measurements(measurements).threads(threads).measure("", new Runnable() {
-            @Override
-            public void run() {
-                for (int i = 0; i < SerialTimes; i++) {
-                    Cache cache = provider.buildCache("test", true);
-                    cache.put("star", "hello", 0);
-                    cache.evict("star");
-                }
-            }
-        });
-
+    public void testRedis() throws Exception {
+        Cache cache = provider.buildCache("test", true);
+        cache.put("1", "hello", 0);
+        cache.put("2", "world", 0);
+        cache.put("3", "starhq", 0);
+        cache.clear();
+//        System.out.println(cache.getKeys());
+//        System.out.println(cache.exists("1"));
+//        cache.evict("1");
+//        System.out.println(cache.exists("1"));
+//        cache.evict("2", "3");
+//        System.out.println(cache.getKeys());
 
     }
 }

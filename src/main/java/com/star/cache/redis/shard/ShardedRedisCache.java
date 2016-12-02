@@ -1,4 +1,4 @@
-package com.star.cache.redis.single;
+package com.star.cache.redis.shard;
 
 import com.star.cache.Cache;
 import com.star.cache.exception.CacheException;
@@ -8,7 +8,7 @@ import com.star.io.CharsetUtil;
 import com.star.io.serializer.SerializationUtils;
 import com.star.string.StringUtil;
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.ShardedJedis;
 import redis.clients.jedis.ShardedJedisPool;
 
 import java.io.IOException;
@@ -18,12 +18,11 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * redis缓存包装,用hash的话过期时间不起作用，不用的话regionBytes不起作用，看个人选择了
+ * 分片的版本
  * <p>
- * Created by starhq on 2016/11/29.
+ * Created by starhq on 2016/12/1.
  */
-public class RedisCache implements Cache {
-
+public class ShardedRedisCache implements Cache {
     /**
      * hash中的key
      */
@@ -31,7 +30,7 @@ public class RedisCache implements Cache {
     /**
      * redis连接池
      */
-    private final JedisPool pool;
+    private final ShardedJedisPool pool;
 
     /**
      * 构造方法
@@ -39,7 +38,7 @@ public class RedisCache implements Cache {
      * @param region key
      * @param pool   连接池
      */
-    public RedisCache(final String region, final JedisPool pool) {
+    public ShardedRedisCache(final String region, final ShardedJedisPool pool) {
         String reg = null;
         if (StringUtil.isBlank(region)) {
             reg = StringUtil.UNDERLINE;
@@ -50,7 +49,6 @@ public class RedisCache implements Cache {
         this.pool = pool;
         this.regionBytes = reg.getBytes();
     }
-
 
 
     /**
@@ -95,7 +93,7 @@ public class RedisCache implements Cache {
     public Object get(final Serializable key) throws CacheException {
         Object result = null;
         if (!Objects.isNull(key)) {
-            try (Jedis cache = pool.getResource()) {
+            try (ShardedJedis cache = pool.getResource()) {
                 final Config config = new Config("config.properties");
                 final byte[] bytes = config.getBool("redis.hash", true) ? cache.hget(regionBytes, getKeyName(key))
                         : cache.get(getKeyName(key));
@@ -129,7 +127,7 @@ public class RedisCache implements Cache {
         } else if (Objects.isNull(value)) {
             evict(key);
         } else {
-            try (Jedis cache = pool.getResource()) {
+            try (ShardedJedis cache = pool.getResource()) {
                 final Config config = new Config("config.properties");
                 if (config.getBool("redis.hash", true)) {
                     cache.hset(regionBytes, getKeyName(key), SerializationUtils.productSerializer(config.getString
@@ -173,7 +171,7 @@ public class RedisCache implements Cache {
     @Override
     public void evict(final Serializable key) throws CacheException {
         if (!Objects.isNull(key)) {
-            try (Jedis cache = pool.getResource()) {
+            try (ShardedJedis cache = pool.getResource()) {
                 final Config config = new Config("config.properties");
                 if (config.getBool("redis.hash", true)) {
                     cache.hdel(regionBytes, getKeyName(key));
@@ -189,6 +187,8 @@ public class RedisCache implements Cache {
 
     /**
      * 批量失效缓存
+     * <p>
+     * 非hash的时候慎用
      *
      * @param keys 键的集合
      * @throws CacheException 缓存异常
@@ -196,7 +196,7 @@ public class RedisCache implements Cache {
     @Override
     public void evict(final Serializable... keys) throws CacheException {
         if (!ArrayUtil.isEmpty(keys)) {
-            try (Jedis cache = pool.getResource()) {
+            try (ShardedJedis cache = pool.getResource()) {
                 final int length = keys.length;
                 byte[][] bytes = new byte[length][];
                 for (int i = 0; i < length; i++) {
@@ -206,7 +206,9 @@ public class RedisCache implements Cache {
                 if (config.getBool("redis.hash", true)) {
                     cache.hdel(regionBytes, bytes);
                 } else {
-                    cache.del(bytes);
+                    for (Jedis jedis : cache.getAllShards()) {
+                        jedis.del(bytes);
+                    }
                 }
 
             } catch (Exception e) {
@@ -223,12 +225,15 @@ public class RedisCache implements Cache {
      */
     @Override
     public void clear() throws CacheException {
-        try (Jedis cache = pool.getResource()) {
+        try (ShardedJedis cache = pool.getResource()) {
             final Config config = new Config("config.properties");
             if (config.getBool("redis.hash", true)) {
                 cache.del(regionBytes);
             } else {
-                cache.flushAll();
+                for (Jedis jedis : cache.getAllShards()) {
+                    jedis.flushAll();
+                }
+
             }
 
         } catch (Exception e) {
@@ -254,13 +259,28 @@ public class RedisCache implements Cache {
      */
     @Override
     public List<?> getKeys() throws CacheException {
-        try (Jedis cache = pool.getResource()) {
+        try (ShardedJedis cache = pool.getResource()) {
             final Config config = new Config("config.properties");
-            return new ArrayList<>(config.getBool("redis.hash", true) ? cache.hkeys(regionBytes) : cache.keys
-                    ("*"));
-        } catch (Exception e) {
+            List<String> keys = new ArrayList<>();
+            if (config.getBool("redis.hash", true)) {
+                for (byte[] bytes : cache.hkeys(regionBytes)) {
+                    keys.add(StringUtil.byte2String(bytes, CharsetUtil.DEFAULT));
+                }
+            } else {
+                for (Jedis jedis : cache.getAllShards()) {
+                    for (String strings : jedis.keys("*")) {
+                        keys.add(strings);
+                    }
+                }
+            }
+            return keys;
+        } catch (
+                Exception e)
+
+        {
             throw new CacheException(StringUtil.format("get keys from redis failure: {}", e.getMessage()), e);
         }
+
     }
 
     /**
@@ -272,7 +292,7 @@ public class RedisCache implements Cache {
      */
     @Override
     public boolean exists(final Serializable key) throws CacheException {
-        try (Jedis cache = pool.getResource()) {
+        try (ShardedJedis cache = pool.getResource()) {
             final Config config = new Config("config.properties");
             return config.getBool("redis.hash", true) ? cache.hexists(regionBytes, getKeyName(key)) : cache.exists
                     (getKeyName(key));
