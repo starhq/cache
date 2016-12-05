@@ -27,7 +27,7 @@ public class ClusterRedisCacheProvider implements CacheProvider {
     @Override
 
     public String name() {
-        return "sharededredis";
+        return "clusterredis";
     }
 
     @Override
